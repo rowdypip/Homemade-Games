@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Infinite Mario‑Style Platformer</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #111;
+      color: #fff;
+      font-family: sans-serif;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: linear-gradient(#6ec5ff, #87e0ff);
+      border: 2px solid #fff;
+    }
+    #info {
+      text-align: center;
+      margin-top: 5px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="800" height="450"></canvas>
+  <div id="info">
+    ← → or A/D to move — Space or ↑ to jump — Refresh resets the world
+  </div>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+
+    const gravity = 0.6;
+    const friction = 0.8;
+
+    const keys = {};
+    window.addEventListener("keydown", e => keys[e.code] = true);
+    window.addEventListener("keyup", e => keys[e.code] = false);
+
+    const COLORS = {
+      ground: "#c06028",
+      dirt: "#8c3c16",
+      pipe: "#2ecc71",
+      block: "#f4c542",
+      blockBorder: "#d4a020",
+      enemy: "#ff5533",
+      coin: "#ffd700"
+    };
+
+    let cameraX = 0;
+
+    const player = {
+      x: 50,
+      y: 0,
+      w: 32,
+      h: 48,
+      vx: 0,
+      vy: 0,
+      speed: 1.0,        // slightly faster for Mario pacing
+      jumpForce: -12,
+      onGround: false,
+      alive: true,
+      coins: 0,
+      distance: 0
+    };
+
+    let platforms = [];
+    let coins = [];
+    let enemies = [];
+    let flags = [];
+
+    // Mario pacing: ~8–10 segments per world
+    let segmentLength = 600;
+    let segmentsPerWorld = 9;
+    let generatedUntilX = 0;
+    let rngSeed = Date.now() % 1000000;
+
+    function rand() {
+      rngSeed = (rngSeed * 1664525 + 1013904223) % 4294967296;
+      return rngSeed / 4294967296;
+    }
+
+    function addPlatform(x, y, w, h, type = "ground") {
+      platforms.push({ x, y, w, h, type });
+    }
+
+    function addBlock(x, y) {
+      platforms.push({ x, y, w: 40, h: 40, type: "block" });
+    }
+
+    function addPipe(x, y, height) {
+      platforms.push({ x, y: y - height, w: 60, h: height, type: "pipe" });
+    }
+
+    function addCoin(x, y) {
+      coins.push({ x, y, r: 8, collected: false });
+    }
+
+    function addEnemy(x, y) {
+      enemies.push({
+        x,
+        y,
+        w: 32,
+        h: 32,
+        vx: 1 + rand() * 0.5,
+        dir: rand() < 0.5 ? -1 : 1,
+        range: 40 + rand() * 80,
+        baseX: x,
+        dead: false
+      });
+    }
+
+    function addFlag(x, y) {
+      flags.push({ x, y, w: 20, h: 80 });
+    }
+
+    // ⭐ SAFE, MARIO‑STYLE, ALWAYS‑ACHIEVABLE GENERATOR ⭐
+    function generateSegment(startX, isFinalSegment = false) {
+      const groundY = HEIGHT - 40;
+
+      // Base ground
+      for (let i = 0; i < segmentLength; i += 40) {
+        addPlatform(startX + i, groundY, 40, 40);
+      }
+
+      const MAX_UP = 90;
+      const MAX_DOWN = 160;
+      const MAX_SEGMENT_HEIGHT_DIFF = 80;
+
+      let heights = [];
+      let lastY = groundY - 100;
+
+      const count = 4 + Math.floor(rand() * 3);
+
+      for (let i = 0; i < count; i++) {
+        const px = startX + 120 + i * (80 + rand() * 80);
+
+        let py = lastY + (rand() * 160 - 80);
+
+        if (py < lastY - MAX_UP) py = lastY - MAX_UP;
+        if (py > lastY + MAX_DOWN) py = lastY + MAX_DOWN;
+
+        if (py < groundY - 240) py = groundY - 240;
+        if (py > groundY - 60)  py = groundY - 60;
+
+        heights.push(py);
+
+        addPlatform(px, py, 120, 20);
+
+        if (rand() < 0.7) {
+          addCoin(px + 20, py - 20);
+          if (rand() < 0.5) addCoin(px + 60, py - 20);
+        }
+
+        if (rand() < 0.4) {
+          addEnemy(px + 40, py - 32);
+        }
+
+        lastY = py;
+      }
+
+      // Enforce highest vs second highest rule
+      heights.sort((a, b) => a - b);
+      if (heights.length >= 2) {
+        const highest = heights[heights.length - 1];
+        const second = heights[heights.length - 2];
+
+        if (highest - second > MAX_SEGMENT_HEIGHT_DIFF) {
+          const correction = second + MAX_SEGMENT_HEIGHT_DIFF;
+          for (const p of platforms) {
+            if (p.x >= startX && p.x < startX + segmentLength) {
+              if (p.y === highest && p.type === "ground") {
+                p.y = correction;
+              }
+            }
+          }
+        }
+      }
+
+      // Mario‑style patterns
+      const pattern = Math.floor(rand() * 4);
+
+      if (pattern === 0) {
+        for (let i = 0; i < 5; i++) {
+          addPlatform(startX + 200 + i * 40, groundY - i * 40, 40, 40);
+        }
+      }
+
+      if (pattern === 1) {
+        for (let i = 0; i < 5; i++) {
+          addPlatform(startX + 200 + i * 40, groundY - (4 - i) * 40, 40, 40);
+        }
+      }
+
+      if (pattern === 2) {
+        for (let i = 0; i < 4; i++) {
+          addBlock(startX + 200 + i * 50, groundY - 160);
+          addCoin(startX + 215 + i * 50, groundY - 180);
+        }
+      }
+
+      if (pattern === 3) {
+        addPipe(startX + 250, groundY, 120);
+        addPipe(startX + 350, groundY, 80);
+        addEnemy(startX + 260, groundY - 32);
+      }
+
+      // ⭐ Place a flag at the end of each Mario‑length world
+      if (isFinalSegment) {
+        addFlag(startX + segmentLength - 80, groundY);
+      }
+    }
+
+    function ensureWorldGeneratedAround(x) {
+      while (generatedUntilX < x + WIDTH * 2) {
+        const segmentIndex = Math.floor(generatedUntilX / segmentLength);
+        const isFinal = (segmentIndex % segmentsPerWorld === segmentsPerWorld - 1);
+        generateSegment(generatedUntilX, isFinal);
+        generatedUntilX += segmentLength;
+      }
+    }
+
+    function cullOldObjects() {
+      const minX = cameraX - WIDTH * 2;
+      platforms = platforms.filter(p => p.x + p.w > minX);
+      coins = coins.filter(c => c.x + c.r > minX && !c.collected);
+      enemies = enemies.filter(e => e.x + e.w > minX && !e.dead);
+      flags = flags.filter(f => f.x + f.w > minX);
+    }
+
+    function rectIntersect(a, b) {
+      return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+      );
+    }
+
+    function updatePlayer() {
+      if (!player.alive) return;
+
+      if (keys["ArrowLeft"] || keys["KeyA"]) player.vx -= player.speed;
+      if (keys["ArrowRight"] || keys["KeyD"]) player.vx += player.speed;
+
+      if ((keys["Space"] || keys["ArrowUp"]) && player.onGround) {
+        player.vy = player.jumpForce;
+        player.onGround = false;
+      }
+
+      player.vy += gravity;
+      player.vx *= friction;
+
+      player.x += player.vx;
+
+      for (const p of platforms) {
+        const box = { x: p.x, y: p.y, w: p.w, h: p.h };
+        const pl = { x: player.x, y: player.y, w: player.w, h: player.h };
+        if (rectIntersect(pl, box)) {
+          if (player.vx > 0) player.x = p.x - player.w;
+          else if (player.vx < 0) player.x = p.x + p.w;
+          player.vx = 0;
+        }
+      }
+
+      player.y += player.vy;
+      player.onGround = false;
+
+      for (const p of platforms) {
+        const box = { x: p.x, y: p.y, w: p.w, h: p.h };
+        const pl = { x: player.x, y: player.y, w: player.w, h: player.h };
+        if (rectIntersect(pl, box)) {
+          if (player.vy > 0) {
+            player.y = p.y - player.h;
+            player.vy = 0;
+            player.onGround = true;
+          } else if (player.vy < 0) {
+            player.y = p.y + p.h;
+            player.vy = 0;
+          }
+        }
+      }
+
+      if (player.y > HEIGHT + 200) player.alive = false;
+
+      for (const c of coins) {
+        if (c.collected) continue;
+        const box = { x: c.x - c.r, y: c.y - c.r, w: c.r * 2, h: c.r * 2 };
+        const pl = { x: player.x, y: player.y, w: player.w, h: player.h };
+        if (rectIntersect(pl, box)) {
+          c.collected = true;
+          player.coins++;
+        }
+      }
+
+      for (const e of enemies) {
+        if (e.dead) continue;
+        const box = { x: e.x, y: e.y, w: e.w, h: e.h };
+        const pl = { x: player.x, y: player.y, w: player.w, h: player.h };
+
+        if (rectIntersect(pl, box)) {
+          if (player.vy > 0) {
+            e.dead = true;
+            player.vy = player.jumpForce * 1.4; // stomp boost
+          } else {
+            player.alive = false;
+          }
+        }
+      }
+
+      cameraX = player.x - WIDTH / 2;
+      if (cameraX < 0) cameraX = 0;
+
+      player.distance = Math.max(player.distance, player.x);
+    }
+
+    function updateEnemies() {
+      for (const e of enemies) {
+        if (e.dead) continue;
+        e.x += e.vx * e.dir;
+        if (e.x < e.baseX - e.range) { e.x = e.baseX - e.range; e.dir = 1; }
+        if (e.x > e.baseX + e.range) { e.x = e.baseX + e.range; e.dir = -1; }
+      }
+    }
+
+    function drawBackground() {
+      ctx.fillStyle = "#6ec5ff";
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      ctx.fillStyle = "#5cb85c";
+      for (let i = -1; i < 20; i++) {
+        const hillX = (i * 300) - cameraX * 0.3;
+        ctx.beginPath();
+        ctx.arc(hillX, HEIGHT, 200, Math.PI, 2 * Math.PI);
+        ctx.fill();
+      }
+    }
+
+    function drawPlatforms() {
+      for (const p of platforms) {
+        const x = p.x - cameraX;
+        if (x + p.w < 0 || x > WIDTH) continue;
+
+        if (p.type === "block") {
+          ctx.fillStyle = COLORS.block;
+          ctx.fillRect(x, p.y, p.w, p.h);
+          ctx.strokeStyle = COLORS.blockBorder;
+          ctx.lineWidth = 3;
+          ctx.strokeRect(x, p.y, p.w, p.h);
+          continue;
+        }
+
+        if (p.type === "pipe") {
+          ctx.fillStyle = COLORS.pipe;
+          ctx.fillRect(x, p.y, p.w, p.h);
+          ctx.fillRect(x - 5, p.y - 20, p.w + 10, 20);
+          continue;
+        }
+
+        ctx.fillStyle = COLORS.ground;
+        ctx.fillRect(x, p.y, p.w, p.h);
+        ctx.fillStyle = COLORS.dirt;
+        ctx.fillRect(x, p.y + p.h - 8, p.w, 8);
+      }
+    }
+
+    function drawCoins() {
+      for (const c of coins) {
+        if (c.collected) continue;
+        const x = c.x - cameraX;
+        ctx.fillStyle = COLORS.coin;
+        ctx.beginPath();
+        ctx.arc(x, c.y, c.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawEnemies() {
+      for (const e of enemies) {
+        if (e.dead) continue;
+        const x = e.x - cameraX;
+        ctx.fillStyle = COLORS.enemy;
+        ctx.fillRect(x, e.y, e.w, e.h);
+      }
+    }
+
+    function drawFlags() {
+      for (const f of flags) {
+        const x = f.x - cameraX;
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(x, f.y - f.h, 4, f.h);
+        ctx.fillStyle = "#00ff00";
+        ctx.beginPath();
+        ctx.moveTo(x + 4, f.y - f.h);
+        ctx.lineTo(x + 34, f.y - f.h + 15);
+        ctx.lineTo(x + 4, f.y - f.h + 30);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    function drawPlayer() {
+      const x = player.x - cameraX;
+      ctx.fillStyle = "#ffd700";
+      ctx.fillRect(x, player.y, player.w, player.h);
+      ctx.fillStyle = "#000";
+      ctx.fillRect(x + 8, player.y + 10, 4, 4);
+      ctx.fillRect(x + 20, player.y + 10, 4, 4);
+    }
+
+    function drawHUD() {
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(0, 0, WIDTH, 30);
+      ctx.fillStyle = "#fff";
+      ctx.font = "16px sans-serif";
+      ctx.fillText("Coins: " + player.coins, 10, 20);
+      ctx.fillText("Distance: " + Math.floor(player.distance), 150, 20);
+
+      if (!player.alive) {
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        ctx.fillStyle = "#ff4444";
+        ctx.font = "40px sans-serif";
+        ctx.fillText("GAME OVER", WIDTH / 2 - 120, HEIGHT / 2);
+        ctx.font = "20px sans-serif";
+        ctx.fillText("Refresh to restart", WIDTH / 2 - 80, HEIGHT / 2 + 40);
+      }
+    }
+
+    function loop() {
+      ensureWorldGeneratedAround(player.x);
+      cullOldObjects();
+
+      updatePlayer();
+      updateEnemies();
+
+      drawBackground();
+      drawPlatforms();
+      drawCoins();
+      drawEnemies();
+      drawFlags();
+      drawPlayer();
+      drawHUD();
+
+      requestAnimationFrame(loop);
+    }
+
+    player.y = HEIGHT - 40 - player.h;
+    generateSegment(0);
+    generatedUntilX = segmentLength;
+    loop();
+  </script>
+</body>
+</html>
